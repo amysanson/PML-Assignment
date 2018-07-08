@@ -1,0 +1,186 @@
+---
+title: "PML_Assignment"
+author: "Amy Sanson"
+date: "07/07/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r include = FALSE}
+library(RColorBrewer)
+library(caret)
+library(randomForest)
+```
+
+## Practical Machine Learning Assignment
+### Preparing data
+
+The data is loaded in and separated into training and testing sets in a 60%-40% split.  This testing set was not the provided testing set, but a section of the provided training set.
+
+```{r}
+print("Loading data...")
+setwd("/Users/amysanson/Documents/Coursera/PML/")
+classedata <- read.csv(file = "pml-training.csv", header = TRUE)
+preTrain = createDataPartition(classedata$classe, p = 0.6)[[1]]
+training <- classedata[preTrain,]
+testing <- classedata[-preTrain,]
+```
+
+A large number of columns contain a large number of missing values.  To investigate this, the number of blank, NA or %DIV/0 error values were counted for each column and plotted.  All other values were considered to be valid.
+
+```{r}
+print("Removing missing values...")
+
+trainx <- training[,-160]
+testx <- testing[,-160]
+
+trainblank <- trainx == ""
+trainblank <- apply(trainblank, 2, sum)
+trainblank[is.na(trainblank)] <- 0
+
+trainna <- is.na(trainx)
+trainna <- apply(trainna, 2, sum)
+
+trainerr <- trainx == "#DIV/0!"
+trainerr <- apply(trainerr, 2, sum)
+trainerr[is.na(trainerr)] <- 0
+
+trainval <- rep(nrow(trainx), ncol(trainx)) - (trainblank + trainna + trainerr)
+```
+
+```{r fig.cap = "Proportions of valid entries by feature"}
+barplot(rbind(trainblank, trainna, trainerr, trainval), beside = FALSE, col = brewer.pal(4,"Accent"))
+legend("bottomleft", legend = c("Blank", "NA", "Error", "Valid"), col = brewer.pal(4,"Accent"), pch = 15, ncol = 4)
+```
+
+As columns with any missing values turned out to have many missing values, only columns with any missing values were removed.
+
+```{r}
+traingood <- trainx[,trainval == nrow(trainx)]
+testgood <- testx[,trainval == nrow(trainx)]
+```
+
+Columns that were numbering rows or a redundant timestamp (the time information was already contained in the previous column) were removed.
+
+```{r}
+print("Removing redundant columns...")
+traingood <- traingood[,c(-1,-5)]
+testgood <- testgood[,c(-1,-5)]
+```
+
+Dummy variables were set up as 0/1 binary columns for the username and windows columns.
+
+```{r}
+print("Setting up dummy variables...")
+trainfull <- cbind(traingood, training$classe)
+colnames(trainfull)[ncol(trainfull)] <- "classe"
+testfull <- cbind(testgood, testing$classe)
+colnames(testfull)[ncol(testfull)] <- "classe"
+
+dummies1 <- dummyVars(classe~., trainfull, sep = ".", levelsOnly = FALSE, fullRank = TRUE)
+traingood <- predict(dummies1, trainfull)
+dummies2 <- dummyVars(classe~., testfull, sep = ".", levelsOnly = FALSE, fullRank = TRUE)
+testgood <- predict(dummies2, testfull)
+```
+
+Summaries of the remaining variables were investigated for near-zero variance.
+
+```{r}
+sumtrain <- summary(traingood)
+sumtest <- summary(testgood)
+```
+
+Part 1 of the timestamp appeared to show near-zero variance, however upon plotting the values it appeared to show a useful range of values.
+
+```{r fig.cap="Range of values for raw_timestamp_part_1"}
+plot(seq(1,nrow(traingood),1),traingood[,6])
+```
+
+The datasets were recombined with the relevant classe values.
+
+```{r}
+trainfinal <- data.frame(traingood,training[,160])
+testfinal <- data.frame(testgood,testing[,160])
+```
+
+### Creating model
+
+Random forest, linear descriminant analysis and recursive partitioning algorithms were applied to the training set and the models applied to the training set with the accuracy calculated. A random forest of the previous models was then performed.  The model was built by applying both levels of algorithm to the training set, and then tested by applying both levels to the testing set.  This achieved a high accurary on the testing set, as can be seen by acc4.
+
+```{r warning = FALSE}
+print("Predicting using random forest...")
+model1 <- randomForest(x = trainfinal[,-62], y = trainfinal[,62])
+pre1 <- predict(model1, testfinal[,-62])
+acc1 <- sum(testfinal[,62] == pre1)/length(pre1)
+
+print("Predicting using linear discriminant analysis...")
+model2 <- train(x = trainfinal[,-62], y = trainfinal[,62], method = "lda")
+pre2 <- predict(model2, testfinal[,-62])
+acc2 <- sum(testfinal[,62] == pre2)/length(pre2)
+
+print("Predicting using recursive partitioning...")
+model3 <- train(x = trainfinal[,-62], y = trainfinal[,62], method = "rpart")
+pre3 <- predict(model3, testfinal[,-62])
+acc3 <- sum(testfinal[,62] == pre3)/length(pre3)
+
+print("Random forest of previous predictions...")
+pret1 <- predict(model1, trainfinal[,-62])
+pret2 <- predict(model2, trainfinal[,-62])
+pret3 <- predict(model3, trainfinal[,-62])
+model4 <- train(x = data.frame(pre1 = pret1, pre2 = pret2, pre3 = pret3), y = trainfinal[,62], method = "rf")
+
+pre4 <- predict(model4, cbind(pre1,pre2,pre3))
+acc4 <- sum(testfinal[,62] == pre4)/length(pre4)
+
+print(acc1)
+print(acc2)
+print(acc3)
+print(acc4)
+```
+
+### Applying to quiz data
+
+The quiz, or provided training set, was prepared in the same way as the previous data sets.  Note that the new_window variable contained only no values in the quiz set, so the dummyVars function could not be used to generate a dummy variable and this had to be done manually.
+
+```{r}
+print("Predicting test values...")
+
+quiz <- read.csv(file = "pml-testing.csv", header = TRUE)
+quizx <- quiz[,c(-160)]
+
+quizgood <- quizx[,trainval == nrow(training)]
+quizgood <- quizgood[,c(-1,-5,-6)]
+quizgood <- cbind(quizgood, classe = as.factor(rep(c("A","B","C","D","E"),(nrow(quizgood)/5))))
+dummies4 <- dummyVars(classe~., quizgood, sep = ".", levelsOnly = FALSE, fullRank = TRUE)
+quizgood <- predict(dummies4, quizgood)
+new_window.yes <- rep(0,nrow(quiz))
+quizfinal <- data.frame(quizgood[,c(1,2,3,4,5)],new_window.yes, quizgood[,c(-1,-2,-3,-4,-5)])
+```
+
+The model from above was then applied to the quiz set, providing 100% accuracy on the 20 quiz values.
+
+```{r warning = FALSE}
+preq1 <- predict(model1, quizfinal)
+preq2 <- predict(model2, quizfinal)
+preq3 <- predict(model3, quizfinal)
+preq <- cbind(preq1,preq2,preq3)
+colnames(preq) <- c("pre1", "pre2", "pre3")
+preq4 <- predict(model4, preq)
+
+print(preq4)
+```
+
+Overall, both on the testing set I separated and the quiz set, the out-of-sample correct prediction rate was above 99%.
+
+
+
+
+
+
+
+
+
+
+
